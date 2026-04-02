@@ -3,28 +3,38 @@ import { NextResponse } from 'next/server';
 
 export async function POST(req: Request) {
   try {
-    // 1. 获取来访者的 IP 地址（Vercel 会自动通过请求头传递这个信息）
-    const ip = req.headers.get('x-forwarded-for') || 'unknown_ip';
+    // 1. 获取用户在网页上输入的账号
+    const body = await req.json();
+    const account = body.account;
 
-    // 2. 去数据库查一查，这个 IP 之前领过吗？
-    const hasClaimed = await kv.get(`claimed_${ip}`);
-    
-    if (hasClaimed) {
-      // 如果查到了记录，说明是来"薅羊毛"的，直接拦截！
-      return NextResponse.json({ success: false, reason: 'already_claimed' });
+    if (!account) {
+      return NextResponse.json({ success: false, reason: 'invalid_account' });
     }
 
-    // 3. 如果没领过，尝试从数据库里拿出一个密钥
+    // 2. 去数据库里查一查这个账号的状态
+    // 我们会在数据库里存类似 user_张三: "unused" (未使用)
+    const accountStatus = await kv.get(`user_${account}`);
+
+    if (!accountStatus) {
+      // 数据库里根本没有这个账号（输错了或者你没设置）
+      return NextResponse.json({ success: false, reason: 'invalid_account' });
+    }
+
+    if (accountStatus === 'used') {
+      // 这个账号已经领过奖励了
+      return NextResponse.json({ success: false, reason: 'already_used' });
+    }
+
+    // 3. 账号有效且未被使用，去库存里拿一个密钥
     const secretKey = await kv.lpop('my_secret_keys');
 
     if (secretKey) {
-      // 4. 【关键一步】拿到密钥后，立刻在数据库里把这个 IP 记入黑名单！
-      // （为了防止数据库爆满，我们可以设置这个 IP 记录 30 天后自动消失，或者永久保留）
-      await kv.set(`claimed_${ip}`, 'true'); 
+      // 4. 【关键】拿到密钥后，立刻把这个账号的状态改成 "used"（已使用）
+      await kv.set(`user_${account}`, 'used');
 
       return NextResponse.json({ success: true, key: secretKey });
     } else {
-      // 数据库里没库存了
+      // 账号是对的，但是库存被领光了
       return NextResponse.json({ success: false, reason: 'empty' });
     }
   } catch (error) {
